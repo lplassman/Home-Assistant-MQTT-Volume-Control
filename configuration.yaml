@@ -1,0 +1,21 @@
+mqtt: #this config only supports one ALSA device - if more than one is needed, create a new config file and new process to use it
+  id: '123456789'    #id of the device on the MQTT server
+  host: mqtt-server   #hostname of the MQTT server
+  port: 1883  #port of the MQTT server - probably want to leave this at the default setting of: 1883
+  user: mqtt-username   #username for MQTT server
+  password: mqtt-password   #password for MQTT server
+  prefix: homeassistant   #first prefix for MQTT commands - probably want to leave this at the default setting of: homeassistant
+  friendly_name: 'Speaker 1'  #name that will show up on the Home Assistant auto generated entity
+  device_prefix: 'smartspeaker'   #second prefix for device config MQTT string - must be all lower-case and no spaces or numbers
+  device_name: 'SmartSpeaker'   #device name that is used for Home Assistant Devices
+  device_manufacturer: 'SmartSpeaker'   #device manufacturer name that is used for Home Assistant Devices
+  device_model: 'ss-1000'   #device model name that is used for Home Assistant Devices
+  device_sw_version: '1.0'  #device software version that is used for Home Assistant Devices
+
+
+devices:
+  speaker123456789:   #id of this speaker - must not contain spaces
+    platform: alsa
+    alsa_number: 1  #device number of alsa - typically is: 1
+    control_name: 'Speaker'   #control name of the alsa device - can be found with: amixer -c <alsa_card_number> - typically is 'PCM' or 'Speaker'
+    
