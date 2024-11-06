@@ -123,7 +123,7 @@ device_sw_version = config['mqtt']['device_sw_version']
 
 
 # Initialize the mqtt client
-mqttc = mqtt.Client(config['mqtt']['id']) # Create a MQTT client object with the given ID in the configuration
+mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, config['mqtt']['id']) # Create a MQTT client object with the given ID in the configuration
 mqttc.username_pw_set(config['mqtt']['user'], config['mqtt']['password'])
 mqttc.on_connect = on_connect
 mqttc.on_message = on_message
