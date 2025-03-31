@@ -5,6 +5,7 @@ import yaml
 import alsaaudio
 import signal
 import sys
+import json
 from typing import Dict, Any, Optional
 
 # Configuration
@@ -148,43 +149,50 @@ def _post_connect_setup(client: mqtt.Client, userdata):
     
     # Home Assistant volume discovery
     volume_discovery_payload = {
-        "name": f"{mqtt_conf['friendly_name']} Volume",
-        "uniq_id": f"{mqtt_conf['id']}_volume",
-        "device": {
-            "name": mqtt_conf['device_name'],
-            "ids": mqtt_conf['id'],
-            "mf": mqtt_conf['device_manufacturer'],
-            "mdl": mqtt_conf['device_model'],
-            "sw": mqtt_conf['device_sw_version']
-        },
-        "avty_t": f"{base_topic}/availability",
-        "cmd_t": f"{base_topic}/volume/set",
-        "stat_t": f"{base_topic}/volume/state",
-        "icon": "mdi:volume-high",
-        "ret": True
+    "name": f"{mqtt_conf['friendly_name']} Volume",
+    "uniq_id": f"{mqtt_conf['id']}_volume",
+    "device": {
+        "name": mqtt_conf['device_name'],
+        "ids": mqtt_conf['id'],
+        "mf": mqtt_conf['device_manufacturer'],
+        "mdl": mqtt_conf['device_model'],
+        "sw": mqtt_conf['device_sw_version']
+    },
+    "avty_t": f"{base_topic}/availability",
+    "cmd_t": f"{base_topic}/volume/set",
+    "stat_t": f"{base_topic}/volume/state",
+    "icon": "mdi:volume-high",
+    "ret": True
     }
-    client.publish(f"{mqtt_conf['discover_prefix']}/number/{mqtt_conf['device_prefix']}/{mqtt_conf['id']}_volume/config", 
-                  str(volume_discovery_payload), retain=True)
+    client.publish(
+        f"{mqtt_conf['discover_prefix']}/number/{mqtt_conf['device_prefix']}/{mqtt_conf['id']}_volume/config",
+        json.dumps(volume_discovery_payload),  # Use json.dumps() instead of str()
+        retain=True
+)
+
     
     # Home Assistant mute discovery
     mute_discovery_payload = {
-        "name": f"{mqtt_conf['friendly_name']} Mute",
-        "uniq_id": f"{mqtt_conf['id']}_mute",
-        "device": {
-            "name": mqtt_conf['device_name'],
-            "ids": mqtt_conf['id'],
-            "mf": mqtt_conf['device_manufacturer'],
-            "mdl": mqtt_conf['device_model'],
-            "sw": mqtt_conf['device_sw_version']
-        },
-        "avty_t": f"{base_topic}/availability",
-        "cmd_t": f"{base_topic}/mute/set",
-        "stat_t": f"{base_topic}/mute/state",
-        "icon": "mdi:speaker-mute",
-        "ret": True
+    "name": f"{mqtt_conf['friendly_name']} Mute",
+    "uniq_id": f"{mqtt_conf['id']}_mute",
+    "device": {
+        "name": mqtt_conf['device_name'],
+        "ids": mqtt_conf['id'],
+        "mf": mqtt_conf['device_manufacturer'],
+        "mdl": mqtt_conf['device_model'],
+        "sw": mqtt_conf['device_sw_version']
+    },
+    "avty_t": f"{base_topic}/availability",
+    "cmd_t": f"{base_topic}/mute/set",
+    "stat_t": f"{base_topic}/mute/state",
+    "icon": "mdi:speaker-mute",
+    "ret": True
     }
-    client.publish(f"{mqtt_conf['discover_prefix']}/switch/{mqtt_conf['device_prefix']}/{mqtt_conf['id']}_mute/config", 
-                  str(mute_discovery_payload), retain=True)
+    client.publish(
+        f"{mqtt_conf['discover_prefix']}/switch/{mqtt_conf['device_prefix']}/{mqtt_conf['id']}_mute/config",
+        json.dumps(mute_discovery_payload),  # Use json.dumps() here too
+        retain=True
+    )
     
     # Publish initial states
     for device in userdata['devices'].values():
@@ -292,7 +300,7 @@ def main():
         print("Service started. Waiting for messages...")
         while not shutdown_flag:
             for device in devices.values():
-                device.publish_current_volume()
+                device.publish_current_state()
             time.sleep(1)
             
     except Exception as e:
