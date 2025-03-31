@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-
+import time
 import paho.mqtt.client as mqtt
 import yaml
 import math
@@ -14,21 +14,33 @@ import alsaaudio
 
 # Initial volume for devices that don't override this in their config:
 default_volume = 80
+DEFAULT_PUBLISH_INTERVAL = 5  # default seconds between volume publishes
 
 # Generic class to control audio volumes
 class VolumeControl:
 
   def __init__(self, device_id):
     self.id = device_id
-    self.volume_topic = str(device_mqtt_prefix)+"/number/"+str(device_prefix)+"/"+str(device_mqtt_id)
+    self.volume_topic = str(device_mqtt_prefix)+str(device_prefix)+"/"+str(device_mqtt_id)
+    self.last_publish_time = 0
+    self.publish_interval = config['mqtt'].get('publish_interval', DEFAULT_PUBLISH_INTERVAL)
+    self.periodic_publish_enabled = self.publish_interval > 0
     
-    if default_volume in config['devices'][self.id]:
+    if 'default_volume' in config['devices'][self.id]:
       self.volume_set(config['devices'][self.id]['default_volume'])
     else:
       print(self.volume_get())
-      #self.volume_set(default_volume)
 
-  # def discovery(self):
+  def publish_current_volume(self):
+    if not self.periodic_publish_enabled:
+      return
+      
+    current_time = time.time()
+    if current_time - self.last_publish_time >= self.publish_interval:
+      current_volume = self.volume_get()
+      mqttc.publish(self.volume_topic + '/state', current_volume)
+      self.last_publish_time = current_time
+  
   def volume_get(self):
     print("Getting Volume from AlsaMixer")
     card_number = config['devices'][self.id]['alsa_number']
@@ -54,6 +66,7 @@ class VolumeControl:
     print("Setting volume to:",self.volume)    
     mixer.setvolume(self.volume) 
     mqttc.publish(self.volume_topic + '/state', self.volume)
+    self.last_publish_time = time.time()
 
   def volume_up(self):
     volume = self.volume + 1
@@ -85,11 +98,14 @@ def load_config():
   
 def on_connect (client, userdata, flags, rc):
  print("Connected to MQTT with result code", rc)
- mqttc.subscribe(str(device_mqtt_prefix)+"/number/"+str(device_prefix)+"/"+str(device_mqtt_id)+"/set")
- VolumeConfig = "{\"name\": \""+str(friendly_name)+" Volume\", \"uniq_id\":"+str(device_mqtt_id)+"1, \"device\": {\"name\": \""+str(device_name)+"\", \"ids\":"+str(device_mqtt_id)+", \"mf\": \""+str(device_manufacturer)+"\", \"mdl\": \""+str(device_model)+"\", \"sw\": \""+str(device_sw_version)+"\"},\"avty_t\": \""+str(device_mqtt_prefix)+"/number/"+str(device_prefix)+"/"+str(device_mqtt_id)+"/availability\", \"cmd_t\": \""+str(device_mqtt_prefix)+"/number/"+str(device_prefix)+"/"+str(device_mqtt_id)+"/set\", \"stat_t\": \""+str(device_mqtt_prefix)+"/number/"+str(device_prefix)+"/"+str(device_mqtt_id)+"/state\", \"icon\":\"mdi:volume-high\", \"ret\": \"true\"}"
- mqttc.publish(str(device_mqtt_prefix)+"/number/"+str(device_prefix)+"/"+str(device_mqtt_id)+"/config",VolumeConfig,0,True)
- mqttc.publish(str(device_mqtt_prefix)+"/number/"+str(device_prefix)+"/"+str(device_mqtt_id)+"/availability","online",0,True)
- #mqttc.publish(self.volume_topic, self.volume)
+ mqttc.subscribe(str(device_mqtt_prefix)+str(device_prefix)+"/"+str(device_mqtt_id)+"/set")
+ VolumeConfig = "{\"name\": \""+str(friendly_name)+" Volume\", \"uniq_id\":"+str(device_mqtt_id)+"1, \"device\": {\"name\": \""+str(device_name)+"\", \"ids\":"+str(device_mqtt_id)+", \"mf\": \""+str(device_manufacturer)+"\", \"mdl\": \""+str(device_model)+"\", \"sw\": \""+str(device_sw_version)+"\"},\"avty_t\": \""+str(device_mqtt_prefix)+str(device_prefix)+"/"+str(device_mqtt_id)+"/availability\", \"cmd_t\": \""+str(device_mqtt_prefix)+str(device_prefix)+"/"+str(device_mqtt_id)+"/set\", \"stat_t\": \""+str(device_mqtt_prefix)+str(device_prefix)+"/"+str(device_mqtt_id)+"/state\", \"icon\":\"mdi:volume-high\", \"ret\": \"true\"}"
+ mqttc.publish(str(ha_discover_mqtt_prefix)+"/number/"+str(device_prefix)+"/"+str(device_mqtt_id)+"/config",VolumeConfig,0,True)
+ mqttc.publish(str(device_mqtt_prefix)+str(device_prefix)+"/"+str(device_mqtt_id)+"/availability","online",0,True)
+ # Publish initial volume state
+ for device_id, device in devices.items():
+    current_volume = device.volume_get()
+    mqttc.publish(device.volume_topic + '/state', current_volume)
 
 def on_message(client, userdata, message):
   print("received message")    
@@ -114,6 +130,7 @@ config = load_config()
 
 device_mqtt_id = config['mqtt']['id']
 device_mqtt_prefix = config['mqtt']['prefix']
+ha_discover_mqtt_prefix = config['mqtt']['discover']
 friendly_name = config['mqtt']['friendly_name']
 device_prefix = config['mqtt']['device_prefix']
 device_name = config['mqtt']['device_name']
@@ -127,16 +144,25 @@ mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, config['mqtt']['id']) # Cr
 mqttc.username_pw_set(config['mqtt']['user'], config['mqtt']['password'])
 mqttc.on_connect = on_connect
 mqttc.on_message = on_message
-mqttc.will_set(str(device_mqtt_prefix)+"/number/"+str(device_prefix)+"/"+str(device_mqtt_id)+"/availability","offline",0,True)
+mqttc.will_set(str(device_mqtt_prefix)+str(device_prefix)+"/"+str(device_mqtt_id)+"/availability","offline",0,True)
 mqttc.connect(config['mqtt']['host'], config['mqtt']['port'])
 
 
 # Populate the device list
 devices = {}
-devices_alsa = {}
 for device_id, device_config in config['devices'].items():
   if device_config['platform'] == 'alsa':
     devices[device_id] = AlsaVolumeControl(device_id)
 
-# Loop
-mqttc.loop_forever()
+# Start MQTT loop in a separate thread
+mqttc.loop_start()
+
+try:
+    while True:
+        for device in devices.values():
+            device.publish_current_volume()
+        time.sleep(1)
+except KeyboardInterrupt:
+    print("Stopping MQTT client...")
+    mqttc.loop_stop()
+    mqttc.disconnect()
