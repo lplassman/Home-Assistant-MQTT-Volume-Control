@@ -4,8 +4,9 @@ mqtt: #this config only supports one ALSA device - if more than one is needed, c
   port: 1883  #port of the MQTT server - probably want to leave this at the default setting of: 1883
   user: mqtt-username   #username for MQTT server
   password: mqtt-password   #password for MQTT server
-  prefix: homeassistant   #first prefix for MQTT commands - probably want to leave this at the default setting of: homeassistant
+  discover_prefix: homeassistant   #MQTT Discovery root topic prefix. Default value is usually 'homeassistant'
   friendly_name: 'Speaker 1'  #name that will show up on the Home Assistant auto generated entity
+  prefix: '' #Arbitrary prefix to precede 'device_prefix' in topic. Can be set to empty string if you want the base topic to start with the content of 'device_prefix'
   device_prefix: 'smartspeaker'   #second prefix for device config MQTT string - must be all lower-case and no spaces or numbers
   device_name: 'SmartSpeaker'   #device name that is used for Home Assistant Devices
   device_manufacturer: 'SmartSpeaker'   #device manufacturer name that is used for Home Assistant Devices

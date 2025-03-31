@@ -18,24 +18,27 @@ class VolumeControl:
         self.config = config
         self.mqttc = mqtt_client
         mqtt_conf = config['mqtt']
-        self.volume_topic = f"{mqtt_conf['prefix']}{mqtt_conf['device_prefix']}/{mqtt_conf['id']}"
+        self.base_topic = f"{mqtt_conf['prefix']}{mqtt_conf['device_prefix']}/{mqtt_conf['id']}"
+        self.volume_topic = f"{self.base_topic}/volume"
+        self.mute_topic = f"{self.base_topic}/mute"
         self.publish_interval = mqtt_conf.get('publish_interval', DEFAULT_PUBLISH_INTERVAL)
         self.periodic_publish_enabled = self.publish_interval > 0
         self.last_publish_time = 0
         
-        # Initialize volume
+        # Initialize state
         self.volume = self.volume_get()
+        self.mute_state = self.mute_get()
         if 'default_volume' in config['devices'][device_id]:
             self.volume_set(config['devices'][device_id]['default_volume'])
 
-    def publish_current_volume(self) -> None:
+    def publish_current_state(self) -> None:
         if not self.periodic_publish_enabled or shutdown_flag:
             return
             
         current_time = time.time()
         if current_time - self.last_publish_time >= self.publish_interval:
-            current_volume = self.volume_get()
-            self._mqtt_publish(f"{self.volume_topic}/state", current_volume)
+            self._mqtt_publish(f"{self.volume_topic}/state", self.volume_get())
+            self._mqtt_publish(f"{self.mute_topic}/state", "ON" if self.mute_get() else "OFF")
             self.last_publish_time = current_time
     
     def volume_get(self) -> int:
@@ -50,6 +53,17 @@ class VolumeControl:
             mixer = alsaaudio.Mixer('Master', 0, card_number)
             return int(mixer.getvolume()[0])
     
+    def mute_get(self) -> bool:
+        card_number = self.config['devices'][self.id]['alsa_number']
+        control_name = self.config['devices'][self.id].get('control_name', 'Master')
+        
+        try:
+            mixer = alsaaudio.Mixer(control_name, 0, card_number)
+            return bool(mixer.getmute()[0])
+        except alsaaudio.ALSAAudioError:
+            mixer = alsaaudio.Mixer('Master', 0, card_number)
+            return bool(mixer.getmute()[0])
+
     def volume_set(self, volume: int) -> None:
         self.volume = volume
         card_number = self.config['devices'][self.id]['alsa_number']
@@ -63,6 +77,21 @@ class VolumeControl:
             mixer.setvolume(volume)
             
         self._mqtt_publish(f"{self.volume_topic}/state", volume)
+        self.last_publish_time = time.time()
+
+    def mute_set(self, state: bool) -> None:
+        card_number = self.config['devices'][self.id]['alsa_number']
+        control_name = self.config['devices'][self.id].get('control_name', 'Master')
+        
+        try:
+            mixer = alsaaudio.Mixer(control_name, 0, card_number)
+            mixer.setmute(1 if state else 0)
+        except alsaaudio.ALSAAudioError:
+            mixer = alsaaudio.Mixer('Master', 0, card_number)
+            mixer.setmute(1 if state else 0)
+            
+        self.mute_state = state
+        self._mqtt_publish(f"{self.mute_topic}/state", "ON" if state else "OFF")
         self.last_publish_time = time.time()
 
     def _mqtt_publish(self, topic: str, payload, retain: bool = True) -> None:
@@ -111,16 +140,16 @@ def _post_connect_setup(client: mqtt.Client, userdata):
     """Common post-connection setup for both MQTT versions"""
     config = userdata['config']
     mqtt_conf = config['mqtt']
+    base_topic = f"{mqtt_conf['prefix']}{mqtt_conf['device_prefix']}/{mqtt_conf['id']}"
     
-    # Subscribe to control topic
-    topic = f"{mqtt_conf['prefix']}{mqtt_conf['device_prefix']}/{mqtt_conf['id']}/set"
-    client.subscribe(topic)
+    # Subscribe to control topics
+    client.subscribe(f"{base_topic}/volume/set")
+    client.subscribe(f"{base_topic}/mute/set")
     
-    # Home Assistant discovery
-    discovery_topic = f"{mqtt_conf['discover']}/number/{mqtt_conf['device_prefix']}/{mqtt_conf['id']}/config"
-    discovery_payload = {
+    # Home Assistant volume discovery
+    volume_discovery_payload = {
         "name": f"{mqtt_conf['friendly_name']} Volume",
-        "uniq_id": f"{mqtt_conf['id']}1",
+        "uniq_id": f"{mqtt_conf['id']}_volume",
         "device": {
             "name": mqtt_conf['device_name'],
             "ids": mqtt_conf['id'],
@@ -128,14 +157,62 @@ def _post_connect_setup(client: mqtt.Client, userdata):
             "mdl": mqtt_conf['device_model'],
             "sw": mqtt_conf['device_sw_version']
         },
-        "avty_t": f"{mqtt_conf['prefix']}{mqtt_conf['device_prefix']}/{mqtt_conf['id']}/availability",
-        "cmd_t": f"{mqtt_conf['prefix']}{mqtt_conf['device_prefix']}/{mqtt_conf['id']}/set",
-        "stat_t": f"{mqtt_conf['prefix']}{mqtt_conf['device_prefix']}/{mqtt_conf['id']}/state",
+        "avty_t": f"{base_topic}/availability",
+        "cmd_t": f"{base_topic}/volume/set",
+        "stat_t": f"{base_topic}/volume/state",
         "icon": "mdi:volume-high",
         "ret": True
     }
-    client.publish(discovery_topic, str(discovery_payload), retain=True)
-    client.publish(f"{mqtt_conf['prefix']}{mqtt_conf['device_prefix']}/{mqtt_conf['id']}/availability", "online", retain=True)
+    client.publish(f"{mqtt_conf['discover_prefix']}/number/{mqtt_conf['device_prefix']}/{mqtt_conf['id']}_volume/config", 
+                  str(volume_discovery_payload), retain=True)
+    
+    # Home Assistant mute discovery
+    mute_discovery_payload = {
+        "name": f"{mqtt_conf['friendly_name']} Mute",
+        "uniq_id": f"{mqtt_conf['id']}_mute",
+        "device": {
+            "name": mqtt_conf['device_name'],
+            "ids": mqtt_conf['id'],
+            "mf": mqtt_conf['device_manufacturer'],
+            "mdl": mqtt_conf['device_model'],
+            "sw": mqtt_conf['device_sw_version']
+        },
+        "avty_t": f"{base_topic}/availability",
+        "cmd_t": f"{base_topic}/mute/set",
+        "stat_t": f"{base_topic}/mute/state",
+        "icon": "mdi:speaker-mute",
+        "ret": True
+    }
+    client.publish(f"{mqtt_conf['discover_prefix']}/switch/{mqtt_conf['device_prefix']}/{mqtt_conf['id']}_mute/config", 
+                  str(mute_discovery_payload), retain=True)
+    
+    # Publish initial states
+    for device in userdata['devices'].values():
+        client.publish(f"{device.volume_topic}/state", device.volume_get())
+        client.publish(f"{device.mute_topic}/state", "ON" if device.mute_get() else "OFF")
+    
+    client.publish(f"{base_topic}/availability", "online", retain=True)
+
+def on_message(client, userdata, message):
+    try:
+        payload = message.payload.decode("utf-8")
+        print(f"Received message on {message.topic}: {payload}")
+        
+        for device in userdata['devices'].values():
+            if message.topic == f"{device.volume_topic}/set":
+                if payload == 'UP':
+                    device.volume_up()
+                elif payload == 'DOWN':
+                    device.volume_down()
+                else:
+                    volume = int(payload)
+                    if 0 <= volume <= 100:
+                        device.volume_set(volume)
+            elif message.topic == f"{device.mute_topic}/set":
+                device.mute_set(payload.upper() == "ON")
+                
+    except Exception as e:
+        print(f"Error processing message: {e}")
 
 def on_message(client, userdata, message):
     try:

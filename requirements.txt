@@ -1,0 +1,11 @@
+# MQTT client (supports both v2.x with MQTTv5 and v1.6.x with MQTTv3)
+paho-mqtt>=1.6.1
+
+# YAML configuration parsing
+PyYAML>=6.0
+
+# ALSA audio control
+pyalsaaudio>=0.9.0
+
+# Optional typing support for older Python versions
+typing-extensions>=4.0.0 ; python_version < '3.8'
