@@ -144,8 +144,15 @@ def _post_connect_setup(client: mqtt.Client, userdata):
     base_topic = f"{mqtt_conf['prefix']}{mqtt_conf['device_prefix']}/{mqtt_conf['id']}"
     
     # Subscribe to control topics
-    client.subscribe(f"{base_topic}/volume/set")
-    client.subscribe(f"{base_topic}/mute/set")
+    mute_topic = f"{base_topic}/mute/set"
+    volume_topic = f"{base_topic}/volume/set"
+    
+    print(f"\nSubscribing to control topics:")
+    print(f"  - {mute_topic}")
+    print(f"  - {volume_topic}")
+    
+    client.subscribe(mute_topic)
+    client.subscribe(volume_topic)
     
     # Home Assistant volume discovery
     volume_discovery_payload = {
@@ -185,7 +192,7 @@ def _post_connect_setup(client: mqtt.Client, userdata):
     "avty_t": f"{base_topic}/availability",
     "cmd_t": f"{base_topic}/mute/set",
     "stat_t": f"{base_topic}/mute/state",
-    "icon": "mdi:speaker-mute",
+    "icon": "mdi:volume-mute",
     "ret": True
     }
     client.publish(
@@ -202,43 +209,34 @@ def _post_connect_setup(client: mqtt.Client, userdata):
     client.publish(f"{base_topic}/availability", "online", retain=True)
 
 def on_message(client, userdata, message):
-    try:
-        payload = message.payload.decode("utf-8")
-        print(f"Received message on {message.topic}: {payload}")
-        
-        for device in userdata['devices'].values():
-            if message.topic == f"{device.volume_topic}/set":
-                if payload == 'UP':
-                    device.volume_up()
-                elif payload == 'DOWN':
-                    device.volume_down()
+  try:
+      payload = message.payload.decode("utf-8").strip().upper()
+      print(f"Received message on {message.topic}: {payload}")
+      
+      for device in userdata['devices'].values():
+          if message.topic == f"{device.volume_topic}/set":
+              if payload == 'UP':
+                  device.volume_up()
+              elif payload == 'DOWN':
+                  device.volume_down()
+              else:
+                  try:
+                      volume = int(payload)
+                      if 0 <= volume <= 100:
+                          device.volume_set(volume)
+                  except ValueError:
+                      print(f"Invalid volume value: {payload}")
+                      
+          elif message.topic == f"{device.mute_topic}/set":
+                if payload in ["ON", "1", "TRUE"]:
+                    device.mute_set(True)
+                elif payload in ["OFF", "0", "FALSE"]:
+                    device.mute_set(False)
                 else:
-                    volume = int(payload)
-                    if 0 <= volume <= 100:
-                        device.volume_set(volume)
-            elif message.topic == f"{device.mute_topic}/set":
-                device.mute_set(payload.upper() == "ON")
-                
-    except Exception as e:
-        print(f"Error processing message: {e}")
-
-def on_message(client, userdata, message):
-    try:
-        payload = message.payload.decode("utf-8")
-        print(f"Received message on {message.topic}: {payload}")
-        
-        for device in userdata['devices'].values():
-            if message.topic == f"{device.volume_topic}/set":
-                if payload == 'UP':
-                    device.volume_up()
-                elif payload == 'DOWN':
-                    device.volume_down()
-                else:
-                    volume = int(payload)
-                    if 0 <= volume <= 100:
-                        device.volume_set(volume)
-    except Exception as e:
-        print(f"Error processing message: {e}")
+                    print(f"Invalid mute command: {payload}")
+                  
+  except Exception as e:
+      print(f"Error processing message: {e}")
 
 def create_mqtt_client(config: Dict[str, Any], use_mqttv5: bool = False) -> mqtt.Client:
     """Create and configure MQTT client with version detection"""
