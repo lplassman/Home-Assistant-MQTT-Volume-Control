@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  mqtt-volume-control:
+    build: .
+    container_name: mqtt-volume-control
+    restart: unless-stopped
+    devices:
+      - "/dev/snd:/dev/snd"  # Required for ALSA audio control
+    volumes:
+      - ./configuration.yaml:/app/configuration.yaml  # Mount config file
+      - /etc/localtime:/etc/localtime:ro  # Sync time with host
+    environment:
+      - TZ=America/New_York  # Set your timezone
