@@ -6,7 +6,8 @@ import alsaaudio
 import signal
 import sys
 import json
-from typing import Dict, Any, Optional
+import select
+from typing import Dict, Any, Optional, List
 
 # Configuration
 DEFAULT_VOLUME = 80
@@ -26,11 +27,51 @@ class VolumeControl:
         self.periodic_publish_enabled = self.publish_interval > 0
         self.last_publish_time = 0
         
+        # Initialize mixer and event handling
+        self.mixer = self._get_mixer()
+        self.mixer_poll = select.poll()
+        mixer_fd = self.mixer.polldescriptors()[0][0]
+        self.mixer_poll.register(mixer_fd, select.POLLIN)
+        
         # Initialize state
         self.volume = self.volume_get()
         self.mute_state = self.mute_get()
         if 'default_volume' in config['devices'][device_id]:
             self.volume_set(config['devices'][device_id]['default_volume'])
+
+    def _get_mixer(self) -> alsaaudio.Mixer:
+        card_number = self.config['devices'][self.id]['alsa_number']
+        control_name = self.config['devices'][self.id].get('control_name', 'Master')
+        
+        try:
+            return alsaaudio.Mixer(control_name, 0, card_number)
+        except alsaaudio.ALSAAudioError:
+            print(f"Failed to get mixer for {control_name}, trying Master...")
+            return alsaaudio.Mixer('Master', 0, card_number)
+
+    def check_for_changes(self) -> bool:
+        """Check for ALSA mixer events and handle them if any occurred"""
+        events = self.mixer_poll.poll(0)  # Non-blocking poll
+        if events:
+            self.mixer.handleevents()
+            new_volume = self.volume_get()
+            new_mute = self.mute_get()
+            
+            changed = False
+            if new_volume != self.volume:
+                self.volume = new_volume
+                self._mqtt_publish(f"{self.volume_topic}/state", new_volume)
+                changed = True
+                
+            if new_mute != self.mute_state:
+                self.mute_state = new_mute
+                self._mqtt_publish(f"{self.mute_topic}/state", "ON" if new_mute else "OFF")
+                changed = True
+                
+            if changed:
+                self.last_publish_time = time.time()
+                return True
+        return False
 
     def publish_current_state(self) -> None:
         if not self.periodic_publish_enabled or shutdown_flag:
@@ -43,53 +84,40 @@ class VolumeControl:
             self.last_publish_time = current_time
     
     def volume_get(self) -> int:
-        card_number = self.config['devices'][self.id]['alsa_number']
-        control_name = self.config['devices'][self.id].get('control_name', 'Master')
-        
         try:
-            mixer = alsaaudio.Mixer(control_name, 0, card_number)
-            return int(mixer.getvolume()[0])
+            return int(self.mixer.getvolume()[0])
         except alsaaudio.ALSAAudioError:
-            print(f"Failed to get volume for {control_name}, trying Master...")
-            mixer = alsaaudio.Mixer('Master', 0, card_number)
-            return int(mixer.getvolume()[0])
+            print("Failed to get volume, reinitializing mixer...")
+            self.mixer = self._get_mixer()
+            return int(self.mixer.getvolume()[0])
     
     def mute_get(self) -> bool:
-        card_number = self.config['devices'][self.id]['alsa_number']
-        control_name = self.config['devices'][self.id].get('control_name', 'Master')
-        
         try:
-            mixer = alsaaudio.Mixer(control_name, 0, card_number)
-            return bool(mixer.getmute()[0])
+            return bool(self.mixer.getmute()[0])
         except alsaaudio.ALSAAudioError:
-            mixer = alsaaudio.Mixer('Master', 0, card_number)
-            return bool(mixer.getmute()[0])
+            print("Failed to get mute state, reinitializing mixer...")
+            self.mixer = self._get_mixer()
+            return bool(self.mixer.getmute()[0])
 
     def volume_set(self, volume: int) -> None:
         self.volume = volume
-        card_number = self.config['devices'][self.id]['alsa_number']
-        control_name = self.config['devices'][self.id].get('control_name', 'Master')
-        
         try:
-            mixer = alsaaudio.Mixer(control_name, 0, card_number)
-            mixer.setvolume(volume)
+            self.mixer.setvolume(volume)
         except alsaaudio.ALSAAudioError:
-            mixer = alsaaudio.Mixer('Master', 0, card_number)
-            mixer.setvolume(volume)
+            print("Failed to set volume, reinitializing mixer...")
+            self.mixer = self._get_mixer()
+            self.mixer.setvolume(volume)
             
         self._mqtt_publish(f"{self.volume_topic}/state", volume)
         self.last_publish_time = time.time()
 
     def mute_set(self, state: bool) -> None:
-        card_number = self.config['devices'][self.id]['alsa_number']
-        control_name = self.config['devices'][self.id].get('control_name', 'Master')
-        
         try:
-            mixer = alsaaudio.Mixer(control_name, 0, card_number)
-            mixer.setmute(1 if state else 0)
+            self.mixer.setmute(1 if state else 0)
         except alsaaudio.ALSAAudioError:
-            mixer = alsaaudio.Mixer('Master', 0, card_number)
-            mixer.setmute(1 if state else 0)
+            print("Failed to set mute, reinitializing mixer...")
+            self.mixer = self._get_mixer()
+            self.mixer.setmute(1 if state else 0)
             
         self.mute_state = state
         self._mqtt_publish(f"{self.mute_topic}/state", "ON" if state else "OFF")
@@ -173,10 +201,9 @@ def _post_connect_setup(client: mqtt.Client, userdata):
     }
     client.publish(
         f"{mqtt_conf['discover_prefix']}/number/{mqtt_conf['device_prefix']}/{mqtt_conf['id']}_volume/config",
-        json.dumps(volume_discovery_payload),  # Use json.dumps() instead of str()
+        json.dumps(volume_discovery_payload),
         retain=True
-)
-
+    )
     
     # Home Assistant mute discovery
     mute_discovery_payload = {
@@ -197,7 +224,7 @@ def _post_connect_setup(client: mqtt.Client, userdata):
     }
     client.publish(
         f"{mqtt_conf['discover_prefix']}/switch/{mqtt_conf['device_prefix']}/{mqtt_conf['id']}_mute/config",
-        json.dumps(mute_discovery_payload),  # Use json.dumps() here too
+        json.dumps(mute_discovery_payload),
         retain=True
     )
     
@@ -209,25 +236,25 @@ def _post_connect_setup(client: mqtt.Client, userdata):
     client.publish(f"{base_topic}/availability", "online", retain=True)
 
 def on_message(client, userdata, message):
-  try:
-      payload = message.payload.decode("utf-8").strip().upper()
-      print(f"Received message on {message.topic}: {payload}")
-      
-      for device in userdata['devices'].values():
-          if message.topic == f"{device.volume_topic}/set":
-              if payload == 'UP':
-                  device.volume_up()
-              elif payload == 'DOWN':
-                  device.volume_down()
-              else:
-                  try:
-                      volume = int(payload)
-                      if 0 <= volume <= 100:
-                          device.volume_set(volume)
-                  except ValueError:
-                      print(f"Invalid volume value: {payload}")
-                      
-          elif message.topic == f"{device.mute_topic}/set":
+    try:
+        payload = message.payload.decode("utf-8").strip().upper()
+        print(f"Received message on {message.topic}: {payload}")
+        
+        for device in userdata['devices'].values():
+            if message.topic == f"{device.volume_topic}/set":
+                if payload == 'UP':
+                    device.volume_up()
+                elif payload == 'DOWN':
+                    device.volume_down()
+                else:
+                    try:
+                        volume = int(payload)
+                        if 0 <= volume <= 100:
+                            device.volume_set(volume)
+                    except ValueError:
+                        print(f"Invalid volume value: {payload}")
+                        
+            elif message.topic == f"{device.mute_topic}/set":
                 if payload in ["ON", "1", "TRUE"]:
                     device.mute_set(True)
                 elif payload in ["OFF", "0", "FALSE"]:
@@ -235,8 +262,8 @@ def on_message(client, userdata, message):
                 else:
                     print(f"Invalid mute command: {payload}")
                   
-  except Exception as e:
-      print(f"Error processing message: {e}")
+    except Exception as e:
+        print(f"Error processing message: {e}")
 
 def create_mqtt_client(config: Dict[str, Any], use_mqttv5: bool = False) -> mqtt.Client:
     """Create and configure MQTT client with version detection"""
@@ -295,11 +322,19 @@ def main():
         client.connect(mqtt_conf['host'], mqtt_conf['port'])
         client.loop_start()
         
-        print("Service started. Waiting for messages...")
+        print("Service started. Waiting for messages and monitoring ALSA events...")
         while not shutdown_flag:
             for device in devices.values():
+                # Check for ALSA events first
+                if device.check_for_changes():
+                    # If changes were detected, skip the periodic publish this cycle
+                    continue
+                
+                # Otherwise, proceed with periodic publishing if needed
                 device.publish_current_state()
-            time.sleep(1)
+            
+            # Short sleep to prevent CPU overload
+            time.sleep(0.1)
             
     except Exception as e:
         print(f"Error in main loop: {e}")
