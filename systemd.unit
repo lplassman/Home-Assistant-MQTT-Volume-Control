@@ -1,0 +1,13 @@
+[Unit]
+Description=ALSA Volume MQTT Publisher
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 /path/to/your/script.py
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
